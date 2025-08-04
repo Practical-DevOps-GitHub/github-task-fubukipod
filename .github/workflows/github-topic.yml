@@ -12,13 +12,11 @@ env:
   DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
 
 jobs:
-  ##########################################
-  # 1. Create & Merge PR with CODEOWNERS + PR Template
-  ##########################################
-  init-files:
-    name: Add CODEOWNERS & PR Template
+  setup:
+    name: GitHub Setup
     runs-on: ubuntu-latest
     steps:
+      # Checkout
       - uses: actions/checkout@v4
         with:
           token: ${{ env.PAT }}
@@ -42,186 +40,88 @@ jobs:
           - [ ] Will this be part of a product update? If yes, describe briefly
           EOF
 
-      - name: Commit to bot branch
+      - name: Commit & Push CODEOWNERS + Template
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git checkout -B auto-setup-bot-templates
           git add .github/CODEOWNERS .github/pull_request_template.md
-          git commit -m "Automated: Added CODEOWNERS & PR template" || echo "No changes"
-          git push https://x-access-token:${{ env.PAT }}@github.com/${{ env.REPO }} auto-setup-bot-templates --force
+          git commit -m "Add CODEOWNERS and PR template" || echo "No changes"
+          git push https://x-access-token:${{ env.PAT }}@github.com/${{ env.REPO }} HEAD:main
 
-      - name: Open Pull Request
-        id: open_pr
-        run: |
-          response=$(curl -s -X POST \
-            -H "Authorization: token ${{ env.PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ env.REPO }}/pulls \
-            -d '{"title":"Auto-Setup: CODEOWNERS & PR template","head":"auto-setup-bot-templates","base":"main"}')
-          echo "pr_number=$(echo $response | jq -r '.number')" >> $GITHUB_ENV
-
-      - name: Merge PR Automatically
+      - name: Invite Collaborator
         run: |
           curl -s -X PUT \
-            -H "Authorization: token ${{ env.PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ env.REPO }}/pulls/${{ env.pr_number }}/merge \
-            -d '{"commit_title":"Auto-merged CODEOWNERS & PR template","merge_method":"squash"}'
-
-  ##########################################
-  # 2. Invite Collaborator
-  ##########################################
-  invite:
-    name: Invite Collaborator
-    runs-on: ubuntu-latest
-    needs: init-files
-    steps:
-      - name: Invite user softservedata
-        run: |
-          curl -X PUT \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ env.REPO }}/collaborators/${{ env.COLLAB_USER }} \
             -d '{"permission":"push"}'
 
-  ##########################################
-  # 3. Create Develop Branch & Set as Default
-  ##########################################
-  develop:
-    name: Ensure Develop as Default
-    runs-on: ubuntu-latest
-    needs: invite
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ env.PAT }}
-          fetch-depth: 0
-
-      - name: Create develop if missing
+      - name: Create develop branch
         run: |
-          git remote set-url origin https://x-access-token:${{ env.PAT }}@github.com/${{ env.REPO }}
           git fetch origin main
           if ! git ls-remote --heads origin develop | grep develop; then
             git checkout -b develop origin/main
-            git push origin develop --force
+            git push origin develop
           fi
+          sleep 5
 
-  ##########################################
-  # 4. Apply Branch Protection Rules + Rulesets
-  ##########################################
-  protect:
-    name: Apply Branch Protections & Rulesets
-    runs-on: ubuntu-latest
-    needs: develop
-    steps:
-      - name: Protect main (classic API)
+      - name: Set develop as default
         run: |
-          curl -X PUT \
-            -H "Authorization: token ${{ env.PAT }}" \
-            -H "Accept: application/vnd.github.luke-cage-preview+json" \
-            https://api.github.com/repos/${{ env.REPO }}/branches/main/protection \
-            -d '{"required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":0,"require_code_owner_reviews":true},"enforce_admins":true,"restrictions":null,"required_status_checks":{"strict":true,"contexts":[]}}'
-
-      - name: Protect develop (classic API)
-        run: |
-          curl -X PUT \
-            -H "Authorization: token ${{ env.PAT }}" \
-            -H "Accept: application/vnd.github.luke-cage-preview+json" \
-            https://api.github.com/repos/${{ env.REPO }}/branches/develop/protection \
-            -d '{"required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":2,"require_code_owner_reviews":false},"enforce_admins":true,"restrictions":null,"required_status_checks":{"strict":true,"contexts":[]}}'
-
-      - name: Create ruleset for develop
-        run: |
-          curl -X POST \
-            -H "Authorization: token ${{ env.PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ env.REPO }}/rulesets \
-            -d '{"name":"Develop PR Rules","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/develop"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":2,"require_code_owner_review":false}}]}'
-
-      - name: Create ruleset for main
-        run: |
-          curl -X POST \
-            -H "Authorization: token ${{ env.PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ env.REPO }}/rulesets \
-            -d '{"name":"Main PR Rules","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]}'
-
-      - name: Force set develop as default branch
-        run: |
-          curl -X PATCH \
+          curl -s -X PATCH \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ env.REPO }} \
             -d '{"default_branch":"develop"}'
 
-  ##########################################
-  # 5. Add Deploy Key
-  ##########################################
-  deploy:
-    name: Add Deploy Key
-    runs-on: ubuntu-latest
-    needs: protect
-    steps:
-      - name: Generate SSH Key
+      - name: Protect main
+        run: |
+          curl -s -X PUT \
+            -H "Authorization: token ${{ env.PAT }}" \
+            -H "Accept: application/vnd.github.luke-cage-preview+json" \
+            https://api.github.com/repos/${{ env.REPO }}/branches/main/protection \
+            -d '{"required_pull_request_reviews":{"required_approving_review_count":0,"require_code_owner_reviews":true},"enforce_admins":true,"restrictions":null,"required_status_checks":null}'
+
+      - name: Protect develop
+        run: |
+          curl -s -X PUT \
+            -H "Authorization: token ${{ env.PAT }}" \
+            -H "Accept: application/vnd.github.luke-cage-preview+json" \
+            https://api.github.com/repos/${{ env.REPO }}/branches/develop/protection \
+            -d '{"required_pull_request_reviews":{"required_approving_review_count":2},"enforce_admins":true,"restrictions":null,"required_status_checks":null}'
+
+      - name: Generate & Upload Deploy Key
         run: |
           ssh-keygen -t rsa -b 4096 -C "deploy_key" -f deploy_key -N ""
           PUB_KEY=$(cat deploy_key.pub)
-          echo "$PUB_KEY" > pub_key.txt
-
-      - name: Upload Deploy Key
-        run: |
-          PUB_KEY=$(cat pub_key.txt)
-          curl -X POST \
+          curl -s -X POST \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ env.REPO }}/keys \
-            -d "{\"title\":\"${{ env.DEPLOY_KEY_TITLE }}\",\"key\":\"${PUB_KEY}\",\"read_only\":false}"
+            -d "{\"title\":\"${{ env.DEPLOY_KEY_TITLE }}\",\"key\":\"$PUB_KEY\",\"read_only\":false}"
 
-  ##########################################
-  # 6. Create Project Board
-  ##########################################
-  project:
-    name: Create Project Board
-    runs-on: ubuntu-latest
-    needs: deploy
-    steps:
-      - name: Create project
+      - name: Create Project Board
         run: |
-          curl -X POST \
+          project_id=$(curl -s -X POST \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github.inertia-preview+json" \
             https://api.github.com/repos/${{ env.REPO }}/projects \
-            -d '{"name":"Automated Project","body":"Board created by GitHub Action"}'
+            -d '{"name":"Automated Project","body":"Board created by GitHub Action"}' | jq -r '.id')
+          curl -s -X POST \
+            -H "Authorization: token ${{ env.PAT }}" \
+            -H "Accept: application/vnd.github.inertia-preview+json" \
+            https://api.github.com/projects/$project_id/columns \
+            -d '{"name":"To Do"}'
 
-  ##########################################
-  # 7. Discord PR Notification
-  ##########################################
-  discord:
-    name: Discord Notification
-    runs-on: ubuntu-latest
-    needs: project
-    if: success()
-    steps:
-      - name: Extract Issue Ref
-        id: issue
-        run: |
-          BODY="${{ github.event.pull_request.body }}"
-          ISSUE=$(echo "$BODY" | grep -oE '#[0-9]+' | head -1 || echo "N/A")
-          LINK="N/A"
-          if [[ "$ISSUE" != "N/A" ]]; then LINK="https://github.com/${{ github.repository }}/issues/${ISSUE//#/}"; fi
-          echo "issue_number=$ISSUE" >> $GITHUB_OUTPUT
-          echo "issue_link=$LINK" >> $GITHUB_OUTPUT
-
-      - name: Send Discord Notification
+      - name: Discord Notification
+        if: always()
         uses: Ilshidur/action-discord@master
         env:
           DISCORD_WEBHOOK: ${{ env.DISCORD_WEBHOOK }}
         with:
           args: |
-            **New PR in github-task-fubukipod**
-            Title: ${{ github.event.pull_request.title }}
-            Author: ${{ github.actor }}
-            PR: ${{ github.event.pull_request.html_url }}
-            Issue: ${{ steps.issue.outputs.issue_number }}
-            Issue Link: ${{ steps.issue.outputs.issue_link }}
+            **New GitHub Setup Completed for github-task-fubukipod**
+            CODEOWNERS & PR Template added
+            Branch Protections Applied
+            Develop Branch Set as Default
+            Deploy Key Created
+            Project Board Created
