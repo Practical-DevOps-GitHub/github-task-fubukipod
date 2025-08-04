@@ -1,4 +1,4 @@
-name: GitHub Topic – Full Auto-Setup
+name: GitHub Topic
 
 on:
   workflow_dispatch:
@@ -13,10 +13,10 @@ env:
 
 jobs:
   ##########################################
-  # 1. Create CODEOWNERS & PR Template
+  # 1. Create & Merge PR with CODEOWNERS + PR Template
   ##########################################
   init-files:
-    name: Prepare CODEOWNERS & PR Template (PR-based)
+    name: Add CODEOWNERS & PR Template
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
           token: ${{ env.PAT }}
           fetch-depth: 0
 
-      - name: Create files
+      - name: Create required files
         run: |
           mkdir -p .github
           echo "*   @${{ env.COLLAB_USER }}" > .github/CODEOWNERS
@@ -52,12 +52,22 @@ jobs:
           git push https://x-access-token:${{ env.PAT }}@github.com/${{ env.REPO }} auto-setup-bot-templates --force
 
       - name: Open Pull Request
+        id: open_pr
         run: |
-          curl -X POST \
+          response=$(curl -s -X POST \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ env.REPO }}/pulls \
-            -d '{"title":"Auto-Setup: CODEOWNERS & PR template","head":"auto-setup-bot-templates","base":"main"}'
+            -d '{"title":"Auto-Setup: CODEOWNERS & PR template","head":"auto-setup-bot-templates","base":"main"}')
+          echo "pr_number=$(echo $response | jq '.number')" >> $GITHUB_ENV
+
+      - name: Merge PR Automatically
+        run: |
+          curl -X PUT \
+            -H "Authorization: token ${{ env.PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ env.REPO }}/pulls/${{ env.pr_number }}/merge \
+            -d '{"commit_title":"Auto-merged CODEOWNERS & PR template","merge_method":"squash"}'
 
   ##########################################
   # 2. Invite Collaborator
@@ -67,7 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: init-files
     steps:
-      - name: Send collaborator invite
+      - name: Invite user softservedata
         run: |
           curl -X PUT \
             -H "Authorization: token ${{ env.PAT }}" \
@@ -76,10 +86,10 @@ jobs:
             -d '{"permission":"push"}'
 
   ##########################################
-  # 3. Create Develop & Set as Default
+  # 3. Create Develop Branch & Set as Default
   ##########################################
   develop:
-    name: Ensure Develop Branch
+    name: Ensure Develop as Default
     runs-on: ubuntu-latest
     needs: invite
     steps:
@@ -88,7 +98,7 @@ jobs:
           token: ${{ env.PAT }}
           fetch-depth: 0
 
-      - name: Create develop branch if missing
+      - name: Create develop if missing
         run: |
           git remote set-url origin https://x-access-token:${{ env.PAT }}@github.com/${{ env.REPO }}
           git fetch origin main
@@ -113,21 +123,21 @@ jobs:
     runs-on: ubuntu-latest
     needs: develop
     steps:
-      - name: Protect main (owner approval)
+      - name: Protect main (require code owner)
         run: |
           curl -X PUT \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github.luke-cage-preview+json" \
             https://api.github.com/repos/${{ env.REPO }}/branches/main/protection \
-            -d '{"required_pull_request_reviews":{"required_approving_review_count":0,"require_code_owner_reviews":true},"enforce_admins":true,"restrictions":null,"required_status_checks":null}'
+            -d '{"required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":0,"require_code_owner_reviews":true},"enforce_admins":true,"restrictions":null,"required_status_checks":{"strict":true,"contexts":[]}}'
 
-      - name: Protect develop (2 approvals)
+      - name: Protect develop (2 approvals required)
         run: |
           curl -X PUT \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github.luke-cage-preview+json" \
             https://api.github.com/repos/${{ env.REPO }}/branches/develop/protection \
-            -d '{"required_pull_request_reviews":{"required_approving_review_count":2},"enforce_admins":true,"restrictions":null,"required_status_checks":null}'
+            -d '{"required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":2,"require_code_owner_reviews":false},"enforce_admins":true,"restrictions":null,"required_status_checks":{"strict":true,"contexts":[]}}'
 
   ##########################################
   # 5. Add Deploy Key
@@ -137,10 +147,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: protect
     steps:
-      - name: Generate SSH key
+      - name: Generate SSH Key
         run: |
           ssh-keygen -t rsa -b 4096 -C "deploy_key" -f deploy_key -N ""
-          echo "PUB_KEY=$(cat deploy_key.pub | tr -d '\n')" >> $GITHUB_ENV
+          PUB_KEY=$(cat deploy_key.pub)
+          echo "PUB_KEY=$PUB_KEY" >> $GITHUB_ENV
 
       - name: Upload Deploy Key
         run: |
@@ -158,7 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy
     steps:
-      - name: Create project board
+      - name: Create project
         run: |
           curl -X POST \
             -H "Authorization: token ${{ env.PAT }}" \
@@ -185,7 +196,7 @@ jobs:
           echo "issue_number=$ISSUE" >> $GITHUB_OUTPUT
           echo "issue_link=$LINK" >> $GITHUB_OUTPUT
 
-      - name: Send Discord Message
+      - name: Send Discord Notification
         uses: Ilshidur/action-discord@master
         env:
           DISCORD_WEBHOOK: ${{ env.DISCORD_WEBHOOK }}
