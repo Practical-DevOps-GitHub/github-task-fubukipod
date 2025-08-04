@@ -59,11 +59,11 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ env.REPO }}/pulls \
             -d '{"title":"Auto-Setup: CODEOWNERS & PR template","head":"auto-setup-bot-templates","base":"main"}')
-          echo "pr_number=$(echo $response | jq '.number')" >> $GITHUB_ENV
+          echo "pr_number=$(echo $response | jq -r '.number')" >> $GITHUB_ENV
 
       - name: Merge PR Automatically
         run: |
-          curl -X PUT \
+          curl -s -X PUT \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ env.REPO }}/pulls/${{ env.pr_number }}/merge \
@@ -107,23 +107,15 @@ jobs:
             git push origin develop --force
           fi
 
-      - name: Set develop as default branch
-        run: |
-          curl -X PATCH \
-            -H "Authorization: token ${{ env.PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ env.REPO }} \
-            -d '{"default_branch":"develop"}'
-
   ##########################################
-  # 4. Apply Branch Protection Rules
+  # 4. Apply Branch Protection Rules + Rulesets
   ##########################################
   protect:
-    name: Apply Branch Protections
+    name: Apply Branch Protections & Rulesets
     runs-on: ubuntu-latest
     needs: develop
     steps:
-      - name: Protect main (require code owner)
+      - name: Protect main (classic API)
         run: |
           curl -X PUT \
             -H "Authorization: token ${{ env.PAT }}" \
@@ -131,13 +123,37 @@ jobs:
             https://api.github.com/repos/${{ env.REPO }}/branches/main/protection \
             -d '{"required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":0,"require_code_owner_reviews":true},"enforce_admins":true,"restrictions":null,"required_status_checks":{"strict":true,"contexts":[]}}'
 
-      - name: Protect develop (2 approvals required)
+      - name: Protect develop (classic API)
         run: |
           curl -X PUT \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github.luke-cage-preview+json" \
             https://api.github.com/repos/${{ env.REPO }}/branches/develop/protection \
             -d '{"required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":2,"require_code_owner_reviews":false},"enforce_admins":true,"restrictions":null,"required_status_checks":{"strict":true,"contexts":[]}}'
+
+      - name: Create ruleset for develop
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ env.PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ env.REPO }}/rulesets \
+            -d '{"name":"Develop PR Rules","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/develop"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":2,"require_code_owner_review":false}}]}'
+
+      - name: Create ruleset for main
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ env.PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ env.REPO }}/rulesets \
+            -d '{"name":"Main PR Rules","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]}'
+
+      - name: Force set develop as default branch
+        run: |
+          curl -X PATCH \
+            -H "Authorization: token ${{ env.PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ env.REPO }} \
+            -d '{"default_branch":"develop"}'
 
   ##########################################
   # 5. Add Deploy Key
@@ -151,10 +167,11 @@ jobs:
         run: |
           ssh-keygen -t rsa -b 4096 -C "deploy_key" -f deploy_key -N ""
           PUB_KEY=$(cat deploy_key.pub)
-          echo "PUB_KEY=$PUB_KEY" >> $GITHUB_ENV
+          echo "$PUB_KEY" > pub_key.txt
 
       - name: Upload Deploy Key
         run: |
+          PUB_KEY=$(cat pub_key.txt)
           curl -X POST \
             -H "Authorization: token ${{ env.PAT }}" \
             -H "Accept: application/vnd.github+json" \
@@ -178,7 +195,7 @@ jobs:
             -d '{"name":"Automated Project","body":"Board created by GitHub Action"}'
 
   ##########################################
-  # 7. Discord PR Notification (with Issue Detection)
+  # 7. Discord PR Notification
   ##########################################
   discord:
     name: Discord Notification
